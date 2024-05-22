@@ -1,0 +1,152 @@
+import pandas as pd
+from sklearn.feature_extraction.text import TfidfVectorizer, CountVectorizer
+from sklearn.model_selection import train_test_split
+from sklearn.naive_bayes import MultinomialNB
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+import fasttext
+from sklearn.preprocessing import MinMaxScaler
+import string
+import nltk
+from nltk.tokenize import word_tokenize
+nltk.download('punkt')
+
+# Load data from CSV file
+data = pd.read_csv("1.csv", encoding='utf-8')
+
+# Split data into text and labels
+X = data['Text']
+y = data['Label']
+
+# Text preprocessing
+def preprocess_text(text):
+    # Remove punctuation
+    text = text.translate(str.maketrans('', '', string.punctuation))
+    # Convert text to lowercase
+    text = text.lower()
+    # Tokenize text
+    tokens = word_tokenize(text)
+    # Join tokens back to a single string
+    return ' '.join(tokens)
+
+X = X.apply(preprocess_text)
+
+# Split data into training and testing sets
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+# TF-IDF vectorization of text
+tfidf_vectorizer = TfidfVectorizer()
+tfidf_train = tfidf_vectorizer.fit_transform(X_train)
+tfidf_test = tfidf_vectorizer.transform(X_test)
+
+# CountVectorizer vectorization of text
+count_vectorizer = CountVectorizer()
+count_train = count_vectorizer.fit_transform(X_train)
+count_test = count_vectorizer.transform(X_test)
+
+# Prepare files for training fastText
+def prepare_fasttext_input(X, y, file_path):
+    with open(file_path, "w", encoding='utf-8') as f:
+        for text, label in zip(X, y):
+            f.write(f"__label__{label} {text}\n")
+
+train_file = "fasttext_train.txt"
+test_file = "fasttext_test.txt"
+prepare_fasttext_input(X_train, y_train, train_file)
+prepare_fasttext_input(X_test, y_test, test_file)
+
+# Train fastText models with modified hyperparameters
+model_cbow = fasttext.train_unsupervised(input=train_file, model='cbow', epoch=10, ws=7)
+model_skipgram = fasttext.train_unsupervised(input=train_file, model='skipgram', ws=10, neg = 3)
+
+def get_fasttext_vectors(model, texts):
+    return [model.get_sentence_vector(text.replace('\n', ' ').strip()) for text in texts]
+
+fasttext_train_vectors_cbow = get_fasttext_vectors(model_cbow, X_train)
+fasttext_test_vectors_cbow = get_fasttext_vectors(model_cbow, X_test)
+fasttext_train_vectors_skipgram = get_fasttext_vectors(model_skipgram, X_train)
+fasttext_test_vectors_skipgram = get_fasttext_vectors(model_skipgram, X_test)
+
+scaler = MinMaxScaler()
+fasttext_train_scaled_cbow = scaler.fit_transform(fasttext_train_vectors_cbow)
+fasttext_test_scaled_cbow = scaler.transform(fasttext_test_vectors_cbow)
+fasttext_train_scaled_skipgram = scaler.fit_transform(fasttext_train_vectors_skipgram)
+fasttext_test_scaled_skipgram = scaler.transform(fasttext_test_vectors_skipgram)
+
+# Naive Bayes classifier based on TF-IDF
+nb_classifier_tfidf = MultinomialNB(alpha=0.5)
+nb_classifier_tfidf.fit(tfidf_train, y_train)
+nb_predictions_tfidf = nb_classifier_tfidf.predict(tfidf_test)
+
+# Naive Bayes classifier based on CountVectorizer
+nb_classifier_count = MultinomialNB()
+nb_classifier_count.fit(count_train, y_train)
+nb_predictions_count = nb_classifier_count.predict(count_test)
+
+# Naive Bayes classifier based on fastText vectors (CBOW)
+nb_classifier_fasttext_cbow = MultinomialNB(alpha=0.5)
+nb_classifier_fasttext_cbow.fit(fasttext_train_scaled_cbow, y_train)
+nb_predictions_fasttext_cbow = nb_classifier_fasttext_cbow.predict(fasttext_test_scaled_cbow)
+
+# Naive Bayes classifier based on fastText vectors (Skip-gram)
+nb_classifier_fasttext_skipgram = MultinomialNB(alpha=0.5)
+nb_classifier_fasttext_skipgram.fit(fasttext_train_scaled_skipgram, y_train)
+nb_predictions_fasttext_skipgram = nb_classifier_fasttext_skipgram.predict(fasttext_test_scaled_skipgram)
+
+# Function to calculate and print metrics
+def print_metrics(y_test, predictions, model_name):
+    accuracy = accuracy_score(y_test, predictions)
+    precision = precision_score(y_test, predictions, average='weighted')
+    recall = recall_score(y_test, predictions, average='weighted')
+    f1 = f1_score(y_test, predictions, average='weighted')
+    print(f"Metrics for {model_name}:")
+    print("Accuracy:", accuracy)
+    print("Precision:", precision)
+    print("Recall:", recall)
+    print("F1-score:", f1)
+    print("\n")
+
+# Print metrics for each model
+print_metrics(y_test, nb_predictions_tfidf, "Naive Bayes with TF-IDF")
+print_metrics(y_test, nb_predictions_count, "Naive Bayes with CountVectorizer")
+print_metrics(y_test, nb_predictions_fasttext_cbow, "Naive Bayes with fastText CBOW")
+print_metrics(y_test, nb_predictions_fasttext_skipgram, "Naive Bayes with fastText Skip-gram")
+
+# Functions to make predictions with new inputs
+def predict_with_tfidf(text):
+    processed_text = preprocess_text(text)
+    text_vector = tfidf_vectorizer.transform([processed_text])
+    prediction = nb_classifier_tfidf.predict(text_vector)
+    return prediction[0]
+
+def predict_with_count(text):
+    processed_text = preprocess_text(text)
+    text_vector = count_vectorizer.transform([processed_text])
+    prediction = nb_classifier_count.predict(text_vector)
+    return prediction[0]
+
+def predict_with_fasttext_cbow(text):
+    processed_text = preprocess_text(text)
+    text_vector = scaler.transform([model_cbow.get_sentence_vector(processed_text)])
+    prediction = nb_classifier_fasttext_cbow.predict(text_vector)
+    return prediction[0]
+
+def predict_with_fasttext_skipgram(text):
+    processed_text = preprocess_text(text)
+    text_vector = scaler.transform([model_skipgram.get_sentence_vector(processed_text)])
+    prediction = nb_classifier_fasttext_skipgram.predict(text_vector)
+    return prediction[0]
+
+# Function to make predictions using all models
+def predict_news(text):
+    print(f"TF-IDF prediction: {predict_with_tfidf(text)}")
+    print(f"CountVectorizer prediction: {predict_with_count(text)}")
+    print(f"fastText CBOW prediction: {predict_with_fasttext_cbow(text)}")
+    print(f"fastText Skip-gram prediction: {predict_with_fasttext_skipgram(text)}")
+
+# Main program to input and predict news
+if __name__ == "__main__":
+    while True:
+        news_article = input("Введіть новину статтю або 'вихід' для завершення: ")
+        if news_article.lower() == "вихід":
+            break
+        predict_news(news_article)
